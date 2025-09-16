@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Music Library Sync Bridge</title>
+</head>
+<body>
+  <script>
+    // This file serves as a bridge for cross-origin communication between music apps
+    (function() {
+      const STORAGE_KEY = 'sharedMusicLibrary';
+      const SYNC_KEY = 'musicLibraryLastSync';
+      const DATA_KEY = 'musicLibrary';
+      
+      // Known origins that are allowed to communicate
+      const TRUSTED_ORIGINS = [
+        'http://localhost:5173',
+        'http://localhost:3001',
+        window.location.origin
+      ];
+      
+      // Function to handle incoming messages
+      function handleMessage(event) {
+        // Verify the origin is trusted
+        if (!TRUSTED_ORIGINS.includes(event.origin)) return;
+        
+        // Handle sync messages
+        if (event.data && event.data.type === 'MUSIC_LIBRARY_SYNC') {
+          const { songs, timestamp } = event.data.payload;
+          if (songs) {
+            // Store the data in localStorage
+            localStorage.setItem(DATA_KEY, JSON.stringify({ songs, timestamp }));
+            localStorage.setItem(SYNC_KEY, JSON.stringify({ timestamp, origin: event.origin }));
+            
+            // Broadcast to all other trusted origins
+            broadcastToOtherOrigins(event.data, event.origin);
+            
+            // Acknowledge receipt
+            event.source.postMessage({
+              type: 'MUSIC_LIBRARY_SYNC_ACK',
+              payload: { received: true, timestamp }
+            }, event.origin);
+          }
+        }
+      }
+      
+      // Function to broadcast to other origins without opening popups
+      function broadcastToOtherOrigins(data, sourceOrigin) {
+        // Store in sessionStorage for other origins to access
+        try {
+          sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data.payload));
+          console.log('[Sync Bridge] Stored data in sessionStorage for cross-origin sync');
+        } catch (e) {
+          console.warn('[Sync Bridge] Failed to store data in sessionStorage:', e);
+        }
+        
+        // Try to find existing iframes to communicate with
+        TRUSTED_ORIGINS.forEach(origin => {
+          if (origin !== sourceOrigin && origin !== window.location.origin) {
+            try {
+              // Try to find an iframe with this origin
+              const iframes = Array.from(window.parent.document.querySelectorAll('iframe'));
+              
+              // Try each iframe
+              for (const iframe of iframes) {
+                try {
+                  if (iframe.contentWindow) {
+                    iframe.contentWindow.postMessage(data, origin);
+                    console.log(`[Sync Bridge] Sent message to iframe (${origin})`);
+                    break;
+                  }
+                } catch (e) {
+                  // Ignore errors, try next iframe
+                }
+              }
+            } catch (e) {
+              console.warn('[Sync Bridge] Error communicating with other origin:', e);
+            }
+          }
+        });
+      }
+      
+      // Check if we have data in sessionStorage to sync
+      function checkSessionStorage() {
+        try {
+          const data = sessionStorage.getItem(STORAGE_KEY);
+          if (data) {
+            const parsedData = JSON.parse(data);
+            // Clear it to prevent repeated syncs
+            sessionStorage.removeItem(STORAGE_KEY);
+            
+            // Broadcast to all trusted origins
+            TRUSTED_ORIGINS.forEach(origin => {
+              if (origin !== window.location.origin) {
+                try {
+                  // Create a message to send
+                  const message = {
+                    type: 'MUSIC_LIBRARY_SYNC',
+                    payload: parsedData
+                  };
+                  
+                  // Try to find an iframe with this origin instead of opening a popup
+                  const iframes = Array.from(window.parent.document.querySelectorAll('iframe'));
+                  
+                  // Try each iframe
+                  let messageSent = false;
+                  for (const iframe of iframes) {
+                    try {
+                      if (iframe.contentWindow) {
+                        iframe.contentWindow.postMessage(message, origin);
+                        console.log(`[Sync Bridge] Sent message to iframe (${origin})`);
+                        messageSent = true;
+                        break;
+                      }
+                    } catch (e) {
+                      // Ignore errors, try next iframe
+                    }
+                  }
+                  
+                  if (!messageSent) {
+                    console.log(`[Sync Bridge] No suitable iframe found for ${origin}, storing in sessionStorage only`);
+                  }
+                } catch (e) {
+                  // Popup might be blocked, ignore
+                }
+              }
+            });
+          }
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+      
+      // Listen for messages
+      window.addEventListener('message', handleMessage);
+      
+      // Check for data to sync when loaded
+      window.addEventListener('load', checkSessionStorage);
+      
+      // Removed automatic sync check to prevent popup opening/closing behavior
+      // Manual sync will still work through other mechanisms
+    })();
+  </script>
+</body>
+</html>
